@@ -30,6 +30,10 @@ const int CH_B = 1;
 uint8_t carSpeed = 160;            // slider controls this
 const uint8_t MIN_SPEED = 160;     // car starts moving from 160
 const uint8_t MAX_SPEED = 255;
+uint8_t turnStrength = 70; 
+const int PIVOT_PERCENT = 25;     // inner wheel reverse strength
+const int TURN_PERCENT  = 30;     // curve reduction strength
+
 
 // ================= Ultrasonic =================
 #define TRIG_PIN 18
@@ -66,6 +70,13 @@ AutoState autoState = AUTO_IDLE;
 unsigned long autoStateStart = 0;
 bool turnLeftNext = true;
 
+// Non-blocking reverse control (obstacle mode)
+unsigned long reverseStartTime = 0;
+bool reversingNow = false;
+bool obstacleLocked = false;
+
+
+
 const unsigned long BACK_TIME = 600;
 const unsigned long TURN_TIME = 700;
 const float OBSTACLE_DIST_CM = 20.0;
@@ -80,7 +91,7 @@ bool clientConnected = false;
 bool prevClientConnected = false;
 
 // since we use ping every 1 sec
-const unsigned long DISCONNECT_TIMEOUT = 3000; // 3 seconds
+const unsigned long DISCONNECT_TIMEOUT = 8000; //  8 seconds
 
 unsigned long statusMsgStart = 0;
 String statusMsg = "";
@@ -202,6 +213,70 @@ void setMotorSpeed(uint8_t l, uint8_t r) {
   ledcWrite(CH_B, r);
 }
 
+void applyMotorSpeed(int left, int right) {
+
+  // -------- SAFETY LIMIT --------
+  left  = constrain(left,  -255, 255);
+  right = constrain(right, -255, 255);
+
+  // anti-stall only when BOTH wheels moving straight
+  bool straightMove =
+    (abs(left) > 0 && abs(right) > 0 &&
+    abs(abs(left) - abs(right)) < 20);
+
+  if (straightMove) {
+    if (left > 0 && left < 90) left = 90;
+    if (left < 0 && left > -90) left = -90;
+
+    if (right > 0 && right < 90) right = 90;
+    if (right < 0 && right > -90) right = -90;
+  }
+
+
+
+
+  // -------- LEFT MOTOR --------
+  if (left > 0) {                     // Forward
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    ledcWrite(CH_A, left);
+  }
+  else if (left < 0) {                // Backward
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    ledcWrite(CH_A, -left);
+  }
+  else {                              // Stop
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    ledcWrite(CH_A, 0);
+  }
+
+
+  // -------- RIGHT MOTOR --------
+  if (right > 0) {                    // Forward
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+    ledcWrite(CH_B, right);
+  }
+  else if (right < 0) {               // Backward
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+    ledcWrite(CH_B, -right);
+  }
+  else {                              // Stop
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+    ledcWrite(CH_B, 0);
+  }
+
+
+  // moving -> brake off
+  brakeByStopButton = false;
+  brakeLight(false);
+}
+
+
 void brakeLight(bool on) {
   digitalWrite(LED_BRAKE, on ? HIGH : LOW);
 }
@@ -291,7 +366,7 @@ void updateUltrasonic() {
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  unsigned long d = pulseIn(ECHO_PIN, HIGH, 25000); // shorter timeout
+  unsigned long d = pulseIn(ECHO_PIN, HIGH, 6000); // shorter timeout
   if (d == 0) cachedDistance = -1;
   else cachedDistance = d * 0.0343 / 2;
 }
@@ -299,37 +374,36 @@ void updateUltrasonic() {
 
 // ================= Indicators Logic =================
 void computeActiveIndicator() {
-  // Headlight direct
+
   digitalWrite(LED_HEAD, headlightOn ? HIGH : LOW);
 
-  // Hazard has highest priority
+  // Hazard highest priority
   if (hazardOn) {
     activeIndicator = IND_HAZARD;
     return;
   }
 
-  // Obstacle mode auto direction indicator
+  // Obstacle mode → disable indicators
   if (obstacleMode) {
-    if (autoState == AUTO_TURN) {
-      activeIndicator = (turnLeftNext ? IND_LEFT : IND_RIGHT);
-    } else {
-      activeIndicator = IND_OFF;
-    }
+    digitalWrite(LED_LEFT, LOW);
+    digitalWrite(LED_RIGHT, LOW);
+    activeIndicator = IND_OFF;
     return;
   }
 
-  // Follow mode no indicators
+  // Follow mode
   if (followMode) {
     activeIndicator = IND_OFF;
     return;
   }
 
-  // Manual mode buttons
+  // Manual mode
   if (manualLeftInd && manualRightInd) activeIndicator = IND_HAZARD;
   else if (manualLeftInd) activeIndicator = IND_LEFT;
   else if (manualRightInd) activeIndicator = IND_RIGHT;
   else activeIndicator = IND_OFF;
 }
+
 
 void updateIndicatorBlink() {
   unsigned long now = millis();
@@ -356,150 +430,243 @@ void updateIndicatorBlink() {
 
 // ================= Manual =================
 void handleManual() {
-  if (forwardCmd) driveForward(carSpeed);
-  else if (backCmd) driveBackward(carSpeed);
-  else if (leftCmd) driveLeft(carSpeed);
-  else if (rightCmd) driveRight(carSpeed);
-  else driveStop();
 
-  // if STOP button was pressed earlier, keep brake ON while car is stopped
-  if (!forwardCmd && !backCmd && !leftCmd && !rightCmd && brakeByStopButton) {
-    brakeLight(true);
+  int leftSpeed = 0;
+  int rightSpeed = 0;
+
+  int pivot = (carSpeed * PIVOT_PERCENT) / 100;
+
+  // ===== FORWARD =====
+  if (forwardCmd) {
+
+    if (leftCmd) {
+      leftSpeed  = -pivot;
+      rightSpeed = carSpeed;
+    }
+    else if (rightCmd) {
+      rightSpeed = -pivot;
+      leftSpeed  = carSpeed;
+    }
+    else {
+      leftSpeed = carSpeed;
+      rightSpeed = carSpeed;
+    }
   }
+
+  // ===== BACKWARD =====
+  else if (backCmd) {
+
+    if (leftCmd) {
+      leftSpeed  = pivot;
+      rightSpeed = -carSpeed;
+    }
+    else if (rightCmd) {
+      rightSpeed = pivot;
+      leftSpeed  = -carSpeed;
+    }
+    else {
+      leftSpeed = -carSpeed;
+      rightSpeed = -carSpeed;
+    }
+  }
+
+  // ===== ROTATE IN PLACE =====
+  else if (leftCmd) {
+    leftSpeed = -carSpeed;
+    rightSpeed = carSpeed;
+  }
+  else if (rightCmd) {
+    leftSpeed = carSpeed;
+    rightSpeed = -carSpeed;
+  }
+
+  // ===== STOP =====
+  else {
+    driveStop();
+    if (brakeByStopButton) brakeLight(true);
+    return;
+  }
+
+  applyMotorSpeed(leftSpeed, rightSpeed);
 }
+
 
 // ================= Obstacle =================
 void handleObstacle() {
-  unsigned long now = millis();
-
-  // brake should not turn ON in auto mode
-  brakeByStopButton = false;
-  brakeLight(false);
-
-  switch (autoState) {
-    case AUTO_IDLE:
-      autoState = AUTO_FORWARD;
-      break;
-
-    case AUTO_FORWARD: {
-      float d = cachedDistance;
-      if (d > 0 && d < OBSTACLE_DIST_CM) {
-        driveStop();
-        autoState = AUTO_BACKWARD;
-        autoStateStart = now;
-      } else {
-        driveForward(carSpeed);
-      }
-    } break;
-
-    case AUTO_BACKWARD:
-      if (now - autoStateStart >= BACK_TIME) {
-        autoState = AUTO_TURN;
-        autoStateStart = now;
-      } else {
-        driveBackward(carSpeed);
-      }
-      break;
-
-    case AUTO_TURN:
-      turnLeftNext ? driveLeft(carSpeed) : driveRight(carSpeed);
-      if (now - autoStateStart >= TURN_TIME) {
-        driveStop();
-        turnLeftNext = !turnLeftNext;
-        autoState = AUTO_FORWARD;
-      }
-      break;
-  }
-}
-
-// ================= Follow =================
-void handleFollow() {
-  // brake should not turn ON in follow mode auto stop
-  brakeByStopButton = false;
-  brakeLight(false);
 
   float d = cachedDistance;
+  unsigned long now = millis();
+  if (d > 20) obstacleLocked = false;
+
   if (d < 0) {
     driveStop();
     return;
   }
 
-  if (d < 12) driveBackward(carSpeed);
-  else if (d <= 20) driveStop();
-  else if (d <= 45) driveForward(carSpeed);
-  else driveStop();
+  // ----- REVERSE PHASE -----
+  if (reversingNow) {
+    applyMotorSpeed(-carSpeed, -carSpeed);
+
+    if (now - reverseStartTime > 180) {
+      reversingNow = false;
+    }
+    return;
+  }
+
+  // VERY CLOSE → start reverse
+  if (d < 12 && !obstacleLocked) {
+    obstacleLocked = true;
+    reversingNow = true;
+    reverseStartTime = now;     
+    turnLeftNext = !turnLeftNext;
+    return;   
+  }
+
+  // CLOSE → curve turn
+  if (d < 30) {
+  int turn = (carSpeed * TURN_PERCENT) / 100;
+
+  if (turnLeftNext)
+    applyMotorSpeed(carSpeed - turn, carSpeed);
+  else
+    applyMotorSpeed(carSpeed, carSpeed - turn);
+
+  return;
+  }
+
+
+  // CLEAR → straight
+  applyMotorSpeed(carSpeed, carSpeed);
 }
+
+
+// ================= Follow =================
+void handleFollow() {
+
+  static int filteredSpeed = 0;
+  float d = cachedDistance;
+
+  if (d < 0) {
+    driveStop();
+    return;
+  }
+
+  // too close
+  if (d < 18) {
+    filteredSpeed = -120;
+  }
+  else if (d <= 32) {
+    filteredSpeed = 0;
+  }
+  else {
+    int target = map(d, 35, 120, 110, carSpeed);
+    target = constrain(target, 110, carSpeed);
+
+    // smoothing filter
+    filteredSpeed = filteredSpeed * 0.7 + target * 0.3;
+  }
+
+  applyMotorSpeed(filteredSpeed, filteredSpeed);
+}
+
+
+
+
 
 // ================= Connection Status =================
 void updateClientStatus() {
+
   unsigned long now = millis();
-  clientConnected = (now - lastClientSeen) < DISCONNECT_TIMEOUT;
+  clientConnected = (now - lastClientSeen) < 3000; // 3 sec no ping = closed page
 
   if (clientConnected != prevClientConnected) {
+
+    if (clientConnected) {
+      statusMsg = "Connected..";
+    } else {
+      statusMsg = "Disconnected..";
+
+      // SAFETY STOP
+      forwardCmd = backCmd = leftCmd = rightCmd = false;
+      obstacleMode = false;
+      followMode = false;
+      driveStop();
+      brakeLight(true);
+    }
+
     prevClientConnected = clientConnected;
-
-    if (clientConnected) statusMsg = "Connected..";
-    else statusMsg = "Disconnected..";
-
     statusMsgStart = now;
   }
 }
 
+
 // ================= LCD DISPLAY =================
-void updateLCD() {
-  float dist = getDistanceCm();
-  unsigned long now = millis();
+void lcdWatchdog() {
+  static unsigned long lastFix = 0;
 
-  updateClientStatus();
+  if (millis() - lastFix < 1500) return;
 
-  bool showStatusMsg = (statusMsg != "" && (now - statusMsgStart) < STATUS_MSG_TIME);
-
-  if (!clientConnected) {
-    lcd.setCursor(0, 0);
-    lcd.print("Connecting....   ");
-    lcd.setCursor(0, 1);
-    lcd.print("Please wait....  ");
-    return;
-  }
-
-  if (showStatusMsg) {
-    lcd.setCursor(0, 0);
-    lcd.print(statusMsg);
-    lcd.print("            ");
-    lcd.setCursor(0, 1);
-    lcd.print("Please wait....  ");
-    return;
-  }
-
-  lcd.setCursor(0, 0);
-  lcd.print("MODE:");
-
-  if (followMode) lcd.print("FOL ");
-  else if (obstacleMode) lcd.print("OBS ");
-  else lcd.print("MAN ");
-
-  lcd.print("SPD:");
-  lcd.print(carSpeed);
-  lcd.print("   ");
-
-  lcd.setCursor(0, 1);
-  lcd.print("DIST:");
-  if (dist < 0) {
-    lcd.print("NA       ");
-  } else {
-    lcd.print(dist, 1);
-    lcd.print("cm      ");
+  if (cachedDistance > 400 || cachedDistance < -20) {
+    lastFix = millis();
+    lcd.init();
+    lcd.backlight();
+    lcd.clear();
   }
 }
+
+void updateLCD() {
+
+  char line1[17];
+  char line2[17];
+
+  // ===== NOT CONNECTED SCREEN =====
+  if (!clientConnected) {
+    lcd.setCursor(0,0);
+    lcd.print("Connecting....  ");
+    lcd.setCursor(0,1);
+    lcd.print("Please wait.... ");
+    return;
+  }
+
+  // ===== STATUS MESSAGE (CONNECTED/DISCONNECTED POPUP) =====
+  if (statusMsg != "" && millis() - statusMsgStart < STATUS_MSG_TIME) {
+    lcd.setCursor(0,0);
+    lcd.print(statusMsg + "        ");
+    lcd.setCursor(0,1);
+    lcd.print("Please wait.... ");
+    return;
+  }
+
+  // ===== NORMAL SCREEN =====
+  char modeText[4];
+
+  if (followMode) strcpy(modeText, "FOL");
+  else if (obstacleMode) strcpy(modeText, "OBS");
+  else strcpy(modeText, "MAN");
+
+  snprintf(line1, sizeof(line1), "MODE:%s SPD:%3d", modeText, carSpeed);
+
+  if (cachedDistance < 0)
+    snprintf(line2, sizeof(line2), "DIST:NA        ");
+  else
+    snprintf(line2, sizeof(line2), "DIST:%5.1f cm  ", cachedDistance);
+
+  lcd.setCursor(0,0);
+  lcd.print(line1);
+
+  lcd.setCursor(0,1);
+  lcd.print(line2);
+}
+
+
 
 // ================= HTTP =================
 void handleRoot() {
-  lastClientSeen = millis();
   server.send_P(200, "text/html", index_html);
 }
 
+
 void handleCmd() {
-  lastClientSeen = millis();
 
   if (obstacleMode || followMode) {
     server.send(200, "text/plain", "IGNORED");
@@ -526,7 +693,6 @@ void handleCmd() {
     if (p) { brakeByStopButton = false; brakeLight(false); }
   }
   else if (d == "s") {
-    // STOP button pressed -> brake light ON
     forwardCmd = backCmd = leftCmd = rightCmd = false;
     driveStop();
     brakeByStopButton = true;
@@ -536,9 +702,8 @@ void handleCmd() {
   server.send(200, "text/plain", "OK");
 }
 
-void handleMode() {
-  lastClientSeen = millis();
 
+void handleMode() {
   obstacleMode = server.arg("auto").toInt();
   followMode = false;
 
@@ -548,14 +713,16 @@ void handleMode() {
 
   autoState = AUTO_FORWARD;
   forwardCmd = backCmd = leftCmd = rightCmd = false;
+
+  brakeByStopButton = false;
+  digitalWrite(LED_BRAKE, LOW);
+
   driveStop();
 
   server.send(200, "text/plain", "OK");
 }
 
 void handleFollowHttp() {
-  lastClientSeen = millis();
-
   followMode = server.arg("f").toInt();
   obstacleMode = false;
 
@@ -564,13 +731,16 @@ void handleFollowHttp() {
   brakeLight(false);
 
   forwardCmd = backCmd = leftCmd = rightCmd = false;
+
+  brakeByStopButton = false;
+  digitalWrite(LED_BRAKE, LOW);
+
   driveStop();
 
   server.send(200, "text/plain", "OK");
 }
 
 void handleSpeed() {
-  lastClientSeen = millis();
 
   int v = server.arg("val").toInt();
   if (v < MIN_SPEED) v = MIN_SPEED;
@@ -578,7 +748,11 @@ void handleSpeed() {
 
   carSpeed = (uint8_t)v;
 
-  // FORCE immediate LCD refresh
+  // instantly reapply motion
+  if (followMode) handleFollow();
+  else if (obstacleMode) handleObstacle();
+  else handleManual();
+
   lastLcdUpdate = 0;
   updateLCD();
 
@@ -586,22 +760,23 @@ void handleSpeed() {
 }
 
 
+
 // Ping
 void handlePing() {
-  lastClientSeen = millis();
+  lastClientSeen = millis();   // THIS is real connection
   server.send(200, "text/plain", "PONG");
 }
 
+
+
 // Headlight
 void handleHead() {
-  lastClientSeen = millis();
   headlightOn = server.arg("on").toInt();
   server.send(200, "text/plain", "OK");
 }
 
 // Indicators (manual only)
 void handleInd() {
-  lastClientSeen = millis();
 
   if (obstacleMode || followMode) {
     server.send(200, "text/plain", "IGNORED");
@@ -627,7 +802,6 @@ void handleInd() {
 
 //Hazard (works in any mode)
 void handleHaz() {
-  lastClientSeen = millis();
   bool on = server.arg("on").toInt();
 
   hazardOn = on;
@@ -659,6 +833,8 @@ void setup() {
 
   // I2C init for LCD
   Wire.begin(21, 22);
+  Wire.setClock(50000);   // make I2C stable (default 100000)
+
 
   lcd.init();
   lcd.backlight();
@@ -673,7 +849,7 @@ void setup() {
   lcd.clear();
 
   // Connection init
-  lastClientSeen = 0;
+  lastClientSeen = 0;   // IMPORTANT
   clientConnected = false;
   prevClientConnected = false;
   statusMsg = "";
@@ -716,9 +892,13 @@ void setup() {
 
 // ================= LOOP =================
 void loop() {
-  updateUltrasonic();
 
-  server.handleClient();
+  server.handleClient();   // FIRST receive commands
+
+  updateClientStatus();    // THEN update state
+
+  updateUltrasonic();
+  lcdWatchdog();
 
   // Movement logic
   if (followMode) handleFollow();
@@ -734,6 +914,4 @@ void loop() {
     lastLcdUpdate = millis();
     updateLCD();
   }
-
-  delay(5);
 }

@@ -1,0 +1,3 @@
+DATE: 15 - FEB - 2026,			TIME: 10:29 PM
+1.	fix manual control like turn left or right while forward and backware.
+2.	fix latency.

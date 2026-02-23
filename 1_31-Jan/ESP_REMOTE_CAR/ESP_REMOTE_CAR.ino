@@ -8,14 +8,9 @@
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ================= WiFi =================
-const char* apSsid = "ESP_CAR";        // offline mode
+const char* apSsid = "ESP_CAR";
 const char* apPassword = "326681285577";
-
-const char* staSsid = "Airtel_ARV15"; // My Wi-Fi address
-const char* staPassword = "Arvind@99";
-
 WebServer server(80);
-
 
 // ================= L298N =================
 #define IN1 14
@@ -60,7 +55,6 @@ bool rightCmd = false;
 
 bool obstacleMode = false;
 bool followMode = false;
-bool voiceMode = false; // Add this with the other flags
 
 // ================= Auto Obstacle =================
 enum AutoState { AUTO_IDLE,
@@ -116,222 +110,89 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32 Robot Car</title>
 <style>
-body{ margin:0; font-family:Arial, sans-serif; background:#111; color:#fff; overflow:hidden; }
-#rotateNotice{ display:none; position:fixed; inset:0; background:#000; color:#fff; align-items:center; justify-content:center; text-align:center; font-size:20px; z-index:999; }
-#app{ display:block; }
-@media (orientation: portrait){ #app{ display:none; } #rotateNotice{ display:flex; } }
-
-/* NAVBAR */
-.navbar{ display:flex; justify-content:space-between; align-items:center; padding:10px; background:#1e1e1e; border-bottom: 2px solid #333; }
-.nav-group{ display:flex; gap:8px; align-items:center; }
-.nav-btn{ padding:10px 14px; border:none; border-radius:8px; background:#444; color:#fff; font-size:12px; cursor:pointer; transition: 0.2s; font-weight:bold; }
-.nav-btn.on{ background:#f1c40f; color:#000; }
-
-/* NAVBAR MODE BADGE */
-#modeBadge { font-size: 11px; background: #000; color: #888; padding: 5px 12px; border-radius: 15px; border: 1px solid #888; min-width: 90px; text-align: center; font-weight: bold; text-transform: uppercase; transition: 0.3s; }
-
-/* ANIMATIONS */
-@keyframes blink { 0% { background: #f1c40f; color: #000; } 50% { background: #444; color: #fff; } 100% { background: #f1c40f; color: #000; } }
-.blink { animation: blink 0.8s infinite; }
-
-@keyframes micPulse { 0% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.7); background: #2ecc71; } 70% { box-shadow: 0 0 0 15px rgba(46, 204, 113, 0); background: #27ae60; } 100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); background: #2ecc71; } }
-.mic-listening { animation: micPulse 1.5s infinite !important; color: #000 !important; }
-
-/* BUTTONS */
-.btn{ padding:16px 22px; margin:8px; border:none; border-radius:10px; background:#444; color:#fff; font-size:18px; cursor:pointer; user-select: none; transition: 0.2s; }
-.btn:active:not(.manual-disabled) { background:#2ecc71 !important; color:#000 !important; }
-.btn.green{ background:#2ecc71 !important; color:#000 !important; }
-.btn.red{ background:#e74c3c !important; color:#fff !important; }
-.btn.grey{ background:#444 !important; color:#fff !important; }
-
-/* DISABLE STATES */
-.manual-disabled{ background:#222 !important; color:#555 !important; opacity:0.3; cursor: not-allowed; pointer-events: none !important; }
-.mic-disabled{ opacity: 0.4; cursor: not-allowed; pointer-events: none; }
-
-.container{ padding:12px; text-align:center; }
-.select-box{ width:70%; max-width:320px; padding:12px; font-size:16px; border-radius:8px; border:2px solid #555; background:#444; color:#fff; outline: none; }
-
-.panel{ display:none; padding:10px; text-align:center; }
-.manual-wrapper{ display:flex; height:calc(100vh - 160px); }
-.manual-left, .manual-right{ flex:1; display:flex; align-items:center; justify-content:center; }
-.manual-left{ flex-direction:column; justify-content:space-between; padding:20px 0; }
-.manual-left .btn, .manual-right .btn{ width:160px; }
-#voiceStat{ color: #2ecc71; margin-top: 10px; font-weight: bold; height: 20px; }
+body{background:#111;color:#fff;font-family:Arial;text-align:center}
+.btn{padding:16px 22px;margin:6px;border:none;border-radius:10px;background:#333;color:#fff;font-size:15px}
+.btn:active{background:#555}
+.sliderBox{width:90%;max-width:420px;margin:auto;padding:10px;background:#222;border-radius:12px}
+input[type=range]{width:100%}
+.value{font-size:18px;margin-top:8px}
+.small{font-size:12px;color:#aaa}
+hr{border:0;height:1px;background:#333;margin:16px 0}
 </style>
 </head>
 <body>
 
-<div id="rotateNotice"><div>🔄 Rotate your phone<br>Landscape mode required</div></div>
+<h2>Welcome to ESP car Remote.</h2>
 
-<div id="app">
-<div class="navbar">
-  <div class="nav-group"><button id="leftIndBtn" class="nav-btn" onclick="toggleLeftInd()">LEFT IND</button></div>
-  <div class="nav-group">
-    <button id="headBtn" class="nav-btn" onclick="toggleHead()">HEADLIGHT</button>
-    <div id="modeBadge">MANUAL</div>
-    <button id="hazBtn" class="nav-btn" onclick="toggleHaz()">HAZARD</button>
-  </div>
-  <div class="nav-group"><button id="rightIndBtn" class="nav-btn" onclick="toggleRightInd()">RIGHT IND</button></div>
-</div>
+<button class="btn" onmousedown="cmd('f',1)" onmouseup="cmd('f',0)" ontouchstart="cmd('f',1)" ontouchend="cmd('f',0)">Forward</button><br>
 
-<div class="container">
-  <select id="modeSelect" class="select-box" onchange="changeMode(this.value)">
-    <option value="manual">Manual Mode</option>
-    <option value="auto">Automatic Mode</option>
-    <option value="follow">Follow Mode</option>
-    <option value="voice">Voice Mode</option>
-  </select>
+<button class="btn" onmousedown="cmd('l',1)" onmouseup="cmd('l',0)" ontouchstart="cmd('l',1)" ontouchend="cmd('l',0)">Left</button>
+<button class="btn" onclick="cmd('s',1)">Stop</button>
+<button class="btn" onmousedown="cmd('r',1)" onmouseup="cmd('r',0)" ontouchstart="cmd('r',1)" ontouchend="cmd('r',0)">Right</button><br>
+
+<button class="btn" onmousedown="cmd('b',1)" onmouseup="cmd('b',0)" ontouchstart="cmd('b',1)" ontouchend="cmd('b',0)">Backward</button>
+
+<br><br>
+
+<div class="sliderBox">
+  <h3>Speed Control (All Modes)</h3>
+  <input type="range" min="160" max="255" value="160" id="spd" oninput="setSpeed(this.value)">
+  <div class="value">Speed: <span id="spdVal">160</span></div>
+  <div class="small">Range: 160 - 255</div>
 </div>
 
-<div id="manualPanel" class="panel">
-  <div class="manual-wrapper">
-    <div class="manual-left">
-      <button class="btn manual-btn" onmousedown="move('f')" ontouchstart="move('f')">FORWARD</button>
-      <button id="stopBtn" class="btn manual-btn" onclick="stopCar()">STOP</button>
-      <button class="btn manual-btn" onmousedown="move('b')" ontouchstart="move('b')">BACKWARD</button>
-    </div>
-    <div class="manual-right">
-      <button class="btn manual-btn" onmousedown="move('l')" ontouchstart="move('l')">LEFT</button>
-      <button class="btn manual-btn" onmousedown="move('r')" ontouchstart="move('r')">RIGHT</button>
-    </div>
-  </div>
-</div>
+<hr>
 
-<div id="autoPanel" class="panel">
-  <button id="autoOnBtn" class="btn" onclick="setAuto(true)">ON</button>
-  <button id="autoOffBtn" class="btn red" onclick="setAuto(false)">OFF</button>
-</div>
+<h3>Lights</h3>
 
-<div id="followPanel" class="panel">
-  <button id="followOnBtn" class="btn" onclick="setFollow(true)">ON</button>
-  <button id="followOffBtn" class="btn red" onclick="setFollow(false)">OFF</button>
-</div>
+<button class="btn" onclick="toggleHead(1)">Headlight ON</button>
+<button class="btn" onclick="toggleHead(0)">Headlight OFF</button><br>
 
-<div id="voicePanel" class="panel">
-  <button id="voiceOnBtn" class="btn" onclick="setVoice(true)">ON</button>
-  <button id="voiceOffBtn" class="btn red" onclick="setVoice(false)">OFF</button>
-  <br><br>
-  <button id="micBtn" class="btn mic-disabled" onclick="startMic()">TAP TO SPEAK</button>
-  <div id="voiceStat">Ready</div>
-</div>
-</div>
+<button class="btn" onclick="toggleInd('L',1)">Left ON</button>
+<button class="btn" onclick="toggleInd('L',0)">Left OFF</button><br>
+
+<button class="btn" onclick="toggleInd('R',1)">Right ON</button>
+<button class="btn" onclick="toggleInd('R',0)">Right OFF</button><br>
+
+<button class="btn" onclick="haz(1)">HAZARD ON</button>
+<button class="btn" onclick="haz(0)">HAZARD OFF</button>
+
+<hr>
+
+<h3>Obstacle Avoid Mode</h3>
+<button class="btn" onclick="mode(1)">ON</button>
+<button class="btn" onclick="mode(0)">OFF</button>
+
+<hr>
+
+<h3>Follow Mode</h3>
+<button class="btn" onclick="follow(1)">ON</button>
+<button class="btn" onclick="follow(0)">OFF</button>
 
 <script>
-let isManualLocked = false;
-let isVoiceActive=false, isAutoActive=false, isFollowActive=false;
-let voiceTimeout, countdownInterval;
-
 function cmd(d,s){ fetch(`/cmd?dir=${d}&state=${s}`); }
-function hideAll(){ document.querySelectorAll('.panel').forEach(p=>p.style.display='none'); }
+function mode(v){ fetch(`/mode?auto=${v}`); }
+function follow(v){ fetch(`/follow?f=${v}`); }
 
-/* THE GLOBAL BADGE REFRESHER */
-function refreshGlobalBadge() {
-  const badge = document.getElementById("modeBadge");
-  if(isAutoActive) { badge.innerText = "AUTO ON"; badge.style.color = badge.style.borderColor = "#2ecc71"; }
-  else if(isFollowActive) { badge.innerText = "FOLLOW ON"; badge.style.color = badge.style.borderColor = "#2ecc71"; }
-  else if(isVoiceActive) { badge.innerText = "VOICE ON"; badge.style.color = badge.style.borderColor = "#2ecc71"; }
-  else { badge.innerText = "MANUAL"; badge.style.color = badge.style.borderColor = "#888"; }
+function setSpeed(v){
+  document.getElementById("spdVal").innerText = v;
+  fetch(`/speed?val=${v}`);
 }
 
-function changeMode(m){
-  hideAll();
-  const panel = document.getElementById(m + "Panel");
-  if(panel) panel.style.display = "block";
-}
+// Headlight
+function toggleHead(v){ fetch(`/head?on=${v}`); }
 
-function stopCar(){ if(isManualLocked) return; document.getElementById("stopBtn").classList.add("red"); cmd('s',1); }
-function move(d){ if(isManualLocked) return; document.getElementById("stopBtn").classList.remove("red"); cmd(d,1); setTimeout(()=>cmd(d,0), 250); }
+// Indicator L/R
+function toggleInd(side, v){ fetch(`/ind?side=${side}&on=${v}`); }
 
-function updateManualState() {
-  isManualLocked = (isAutoActive || isFollowActive || isVoiceActive);
-  document.querySelectorAll('.manual-btn').forEach(btn => btn.classList.toggle('manual-disabled', isManualLocked));
-}
+// Hazard
+function haz(v){ fetch(`/haz?on=${v}`); }
 
-/* RESET ALL MODES EXCEPT THE NEW ONE */
-function resetAllModes(except) {
-  if(except !== 'auto' && isAutoActive) setAuto(false);
-  if(except !== 'follow' && isFollowActive) setFollow(false);
-  if(except !== 'voice' && isVoiceActive) setVoice(false);
-}
-
-/* MODE TOGGLES */
-function setAuto(v){
-  if(v) resetAllModes('auto'); // Turn off others if turning this ON
-  isAutoActive = v;
-  document.getElementById("autoOnBtn").className=v?"btn green":"btn grey";
-  document.getElementById("autoOffBtn").className=v?"btn grey":"btn red";
-  refreshGlobalBadge(); updateManualState(); fetch(`/mode?auto=${v?1:0}`);
-}
-
-function setFollow(v){
-  if(v) resetAllModes('follow');
-  isFollowActive = v;
-  document.getElementById("followOnBtn").className=v?"btn green":"btn grey";
-  document.getElementById("followOffBtn").className=v?"btn grey":"btn red";
-  refreshGlobalBadge(); updateManualState(); fetch(`/follow?f=${v?1:0}`);
-}
-
-function setVoice(v){
-  if(v) resetAllModes('voice');
-  isVoiceActive = v;
-  document.getElementById("voiceOnBtn").className=v?"btn green":"btn grey";
-  document.getElementById("voiceOffBtn").className=v?"btn grey":"btn red";
-  document.getElementById("micBtn").classList.toggle("mic-disabled", !v);
-  refreshGlobalBadge(); updateManualState(); fetch(`/voice?v=${v?1:0}`);
-}
-
-/* INDICATORS & HAZARD */
-let lOn=false, rOn=false, hOn=false, headOn=false;
-function toggleHead(){ headOn=!headOn; document.getElementById("headBtn").classList.toggle("on",headOn); fetch(`/head?on=${headOn?1:0}`); }
-function toggleLeftInd(){ if(hOn) return; lOn=!lOn; rOn=false; updateIndicatorUI(); fetch(`/ind?side=L&on=${lOn?1:0}`); }
-function toggleRightInd(){ if(hOn) return; rOn=!rOn; lOn=false; updateIndicatorUI(); fetch(`/ind?side=R&on=${rOn?1:0}`); }
-function toggleHaz(){ hOn=!hOn; if(hOn){ lOn=false; rOn=false; } updateIndicatorUI(); fetch(`/haz?on=${hOn?1:0}`); }
-function updateIndicatorUI(){
-  const lB=document.getElementById("leftIndBtn"), rB=document.getElementById("rightIndBtn"), hB=document.getElementById("hazBtn");
-  lB.classList.remove("blink"); rB.classList.remove("blink"); hB.classList.remove("on");
-  if(hOn){ hB.classList.add("on"); lB.classList.add("blink"); rB.classList.add("blink"); }
-  else { if(lOn) lB.classList.add("blink"); if(rOn) rB.classList.add("blink"); }
-}
-
-/* VOICE LOGIC */
-let recognition;
-if('webkitSpeechRecognition' in window){
-  recognition = new webkitSpeechRecognition();
-  recognition.onresult = (e) => {
-    const text = e.results[0][0].transcript.toLowerCase();
-    document.getElementById("voiceStat").innerText = "Heard: " + text;
-    let d = text.includes("forward")?'f':text.includes("backward")?'b':text.includes("left")?'l':text.includes("right")?'r':'s';
-    fetch(`/cmd?dir=${d}&state=1`); setTimeout(()=>fetch(`/cmd?dir=${d}&state=0`), 800);
-    stopMicUI();
-  };
-  recognition.onend = () => stopMicUI();
-}
-function startMic(){
-  if(!isVoiceActive) return alert("Please turn ON Voice Mode first!");
-  if(!recognition) return;
-  const mBtn = document.getElementById("micBtn");
-  let timeLeft = 5;
-  mBtn.classList.add("mic-listening");
-  mBtn.textContent = `LISTENING (${timeLeft}s)`;
-  recognition.start();
-  voiceTimeout = setTimeout(() => { recognition.stop(); stopMicUI(); }, 5000);
-  clearInterval(countdownInterval);
-  countdownInterval = setInterval(() => {
-    timeLeft--; mBtn.textContent = timeLeft > 0 ? `LISTENING (${timeLeft}s)` : "TAP TO SPEAK";
-    if(timeLeft <= 0) clearInterval(countdownInterval);
-  }, 1000);
-}
-function stopMicUI(){
-  const mBtn = document.getElementById("micBtn");
-  mBtn.textContent = "TAP TO SPEAK"; mBtn.classList.remove("mic-listening");
-  clearTimeout(voiceTimeout); clearInterval(countdownInterval);
-}
-
-changeMode('manual');
-refreshGlobalBadge();
+// HEARTBEAT PING (every 1 sec)
+setInterval(()=>{ fetch('/ping'); }, 1000);
 </script>
+
 </body>
 </html>)=====";
 
@@ -584,24 +445,6 @@ void updateClientStatus() {
   }
 }
 
-// Add it right here, after handleFollowHttp
-void handleVoice() {
-  lastClientSeen = millis();
-
-  voiceMode = server.arg("v").toInt();
-  obstacleMode = false;
-  followMode = false;
-
-  // disable brake when changing modes
-  brakeByStopButton = false;
-  brakeLight(false);
-
-  forwardCmd = backCmd = leftCmd = rightCmd = false;
-  driveStop();
-
-  server.send(200, "text/plain", "OK");
-}
-
 // ================= LCD DISPLAY =================
 void updateLCD() {
   float dist = getDistanceCm();
@@ -630,9 +473,9 @@ void updateLCD() {
 
   lcd.setCursor(0, 0);
   lcd.print("MODE:");
+
   if (followMode) lcd.print("FOL ");
   else if (obstacleMode) lcd.print("OBS ");
-  else if (voiceMode) lcd.print("VOI "); // Added this
   else lcd.print("MAN ");
 
   lcd.print("SPD:");
@@ -657,12 +500,6 @@ void handleRoot() {
 
 void handleCmd() {
   lastClientSeen = millis();
-
-  // BLOCK manual control in voice mode
-  if (voiceMode) {
-    server.send(200, "text/plain", "IGNORED");
-    return;
-  }
 
   if (obstacleMode || followMode) {
     server.send(200, "text/plain", "IGNORED");
@@ -689,6 +526,7 @@ void handleCmd() {
     if (p) { brakeByStopButton = false; brakeLight(false); }
   }
   else if (d == "s") {
+    // STOP button pressed -> brake light ON
     forwardCmd = backCmd = leftCmd = rightCmd = false;
     driveStop();
     brakeByStopButton = true;
@@ -826,30 +664,6 @@ void setup() {
   lcd.backlight();
   lcd.clear();
 
-  // ===== WiFi: AP + Internet =====
-  WiFi.mode(WIFI_AP_STA);
-
-  // ESP offline hotspot
-  WiFi.softAP(apSsid, apPassword);
-
-  // Connect to laptop hotspot (internet)
-  WiFi.begin(staSsid, staPassword);
-
-  Serial.print("Connecting to internet");
-  unsigned long startAttempt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nInternet connected");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("\nInternet not available (offline mode)");
-  }
-
-
   // Starting message
   lcd.setCursor(0, 0);
   lcd.print("ESP32 ROBOT CAR");
@@ -880,17 +694,15 @@ void setup() {
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
-// If we remove the internet option then Uncomment this
   // WiFi AP
-  // WiFi.mode(WIFI_AP);
-  // WiFi.softAP(apSsid, apPassword);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(apSsid, apPassword);
 
   // Web routes
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
   server.on("/mode", handleMode);
   server.on("/follow", handleFollowHttp);
-  server.on("/voice", handleVoice);
   server.on("/speed", handleSpeed);
   server.on("/ping", handlePing);
 
@@ -913,12 +725,6 @@ void loop() {
   else if (obstacleMode) handleObstacle();
   else handleManual();
 
-  // stop car if voice loses internet
-  if (voiceMode && WiFi.status() != WL_CONNECTED) {
-    forwardCmd = backCmd = leftCmd = rightCmd = false;
-    driveStop();
-  }
-
   // LED logic
   computeActiveIndicator();
   updateIndicatorBlink();
@@ -931,4 +737,3 @@ void loop() {
 
   delay(5);
 }
-
