@@ -30,7 +30,6 @@ const int CH_B = 1;
 uint8_t carSpeed = 160;            // slider controls this
 const uint8_t MIN_SPEED = 160;     // car starts moving from 160
 const uint8_t MAX_SPEED = 255;
-uint8_t turnStrength = 70; 
 const int PIVOT_PERCENT = 25;     // inner wheel reverse strength
 const int TURN_PERCENT  = 30;     // curve reduction strength
 
@@ -61,13 +60,15 @@ bool obstacleMode = false;
 bool followMode = false;
 
 // ================= Auto Obstacle =================
-enum AutoState { AUTO_IDLE,
-                 AUTO_FORWARD,
-                 AUTO_BACKWARD,
-                 AUTO_TURN };
-AutoState autoState = AUTO_IDLE;
 
-unsigned long autoStateStart = 0;
+// enum AutoState { AUTO_IDLE,
+//                  AUTO_FORWARD,
+//                  AUTO_BACKWARD,
+//                  AUTO_TURN };
+// AutoState autoState = AUTO_IDLE;
+
+// unsigned long autoStateStart = 0;
+
 bool turnLeftNext = true;
 
 // Non-blocking reverse control (obstacle mode)
@@ -94,7 +95,7 @@ bool prevClientConnected = false;
 const unsigned long DISCONNECT_TIMEOUT = 8000; //  8 seconds
 
 unsigned long statusMsgStart = 0;
-String statusMsg = "";
+const char* statusMsg = "";
 const unsigned long STATUS_MSG_TIME = 1200; // ms
 
 // ================= Indicator Control =================
@@ -232,9 +233,6 @@ void applyMotorSpeed(int left, int right) {
     if (right < 0 && right > -90) right = -90;
   }
 
-
-
-
   // -------- LEFT MOTOR --------
   if (left > 0) {                     // Forward
     digitalWrite(IN1, HIGH);
@@ -270,10 +268,12 @@ void applyMotorSpeed(int left, int right) {
     ledcWrite(CH_B, 0);
   }
 
+  if (left == 0 && right == 0) {
+    brakeLight(true);
+  } else {
+    brakeLight(false);
+  }
 
-  // moving -> brake off
-  brakeByStopButton = false;
-  brakeLight(false);
 }
 
 
@@ -341,19 +341,6 @@ void driveRight(uint8_t s) {
 }
 
 // ================= Ultrasonic =================
-float getDistanceCm() {
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-
-  unsigned long d = pulseIn(ECHO_PIN, HIGH, 30000);
-  if (d == 0) return -1;
-
-  return d * 0.0343 / 2;
-}
-
 void updateUltrasonic() {
 
   unsigned long now = millis();
@@ -500,8 +487,7 @@ void handleManual() {
 
   // ===== STOP =====
   else {
-    driveStop();
-    if (brakeByStopButton) brakeLight(true);
+    applyMotorSpeed(0, 0);
     return;
   }
 
@@ -517,7 +503,7 @@ void handleObstacle() {
   if (d > 20) obstacleLocked = false;
 
   if (d < 0) {
-    driveStop();
+    applyMotorSpeed(0, 0);
     return;
   }
 
@@ -565,7 +551,7 @@ void handleFollow() {
   float d = cachedDistance;
 
   if (d < 0) {
-    driveStop();
+    applyMotorSpeed(0, 0);
     return;
   }
 
@@ -587,15 +573,11 @@ void handleFollow() {
   applyMotorSpeed(filteredSpeed, filteredSpeed);
 }
 
-
-
-
-
 // ================= Connection Status =================
 void updateClientStatus() {
 
   unsigned long now = millis();
-  clientConnected = (now - lastClientSeen) < 3000; // 3 sec no ping = closed page
+  clientConnected = (now - lastClientSeen) < DISCONNECT_TIMEOUT; // 3 sec no ping = closed page
 
   if (clientConnected != prevClientConnected) {
 
@@ -649,7 +631,8 @@ void updateLCD() {
   // ===== STATUS MESSAGE (CONNECTED/DISCONNECTED POPUP) =====
   if (statusMsg != "" && millis() - statusMsgStart < STATUS_MSG_TIME) {
     lcd.setCursor(0,0);
-    lcd.print(statusMsg + "        ");
+    lcd.print(statusMsg);
+    lcd.print("        ");
     lcd.setCursor(0,1);
     lcd.print("Please wait.... ");
     return;
@@ -729,7 +712,7 @@ void handleMode() {
   brakeByStopButton = false;
   brakeLight(false);
 
-  autoState = AUTO_FORWARD;
+  //autoState = AUTO_FORWARD;
   forwardCmd = backCmd = leftCmd = rightCmd = false;
 
   brakeByStopButton = false;
@@ -867,7 +850,7 @@ void setup() {
   lcd.clear();
 
   // Connection init
-  lastClientSeen = 0;   // IMPORTANT
+  lastClientSeen = millis() - DISCONNECT_TIMEOUT;   // IMPORTANT
   clientConnected = false;
   prevClientConnected = false;
   statusMsg = "";
